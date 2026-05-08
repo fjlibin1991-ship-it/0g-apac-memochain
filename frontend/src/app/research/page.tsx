@@ -1,28 +1,41 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { analyzePaper } from "../../../../src/lib/agent";
-import { uploadPaper, appendSessionEvent } from "../../../../src/lib/0g";
+import { analyzePaper, answerResearchQuestion } from "../../../../src/lib/agent";
+import { uploadPaper, appendSessionEvent, getPaper } from "../../../../src/lib/0g";
+import { useAccount } from "wagmi";
 
 export default function ResearchPage() {
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<{ text: string; citations: { paperId: string; title: string; excerpt: string }[] } | null>(null);
   const [papers, setPapers] = useState<{ id: string; title: string }[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [asking, setAsking] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const { address } = useAccount({});
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
 
-    // Read PDF text (simplified — real impl would use pdf-parse)
-    const text = await file.text().catch(() => "Sample paper text for analysis");
-    const title = file.name.replace(".pdf", "");
-
     try {
+      // Parse PDF with pdf-parse
+      let text = "";
+      if (file.name.endsWith(".pdf")) {
+        const pdfParse = (await import("pdf-parse")).default;
+        const buffer = await file.arrayBuffer();
+        const { text: pdfText } = await pdfParse(Buffer.from(buffer));
+        text = pdfText;
+      } else {
+        text = await file.text();
+      }
+      const title = file.name.replace(/\.(pdf|txt|md)$/i, "");
+
       const analysis = await analyzePaper(text, title, ["AI", "LLM", "machine learning"]);
       const paperId = "paper_" + Date.now();
+      const researcherId = address || "0x0000000000000000000000000000000000000000";
+
       await uploadPaper({
         id: paperId,
         title,
@@ -31,30 +44,55 @@ export default function ResearchPage() {
         keyClaims: analysis.keyClaims || [],
         methodology: analysis.methodology || "",
         uploadedAt: Date.now(),
-        researcherId: "0x...",
+        researcherId,
         ipfsUri: "",
       });
       await appendSessionEvent({
-        researcherId: "0x...",
+        researcherId,
         type: "paper_upload",
         payload: { paperId, title, claimsCount: analysis.keyClaims?.length || 0 },
         timestamp: Date.now(),
       });
       setPapers((prev) => [...prev, { id: paperId, title }]);
     } catch (err) {
-      console.error(err);
+      console.error("Upload error:", err);
     } finally {
       setUploading(false);
     }
   };
 
   const handleAsk = async () => {
-    if (!question.trim()) return;
-    // Simulate AI answer (real impl calls agent.answerResearchQuestion)
-    setAnswer({
-      text: `Based on your ${papers.length} uploaded paper${papers.length !== 1 ? "s" : ""}, here's my analysis of: "${question}". This conclusion draws on the key claims extracted from your corpus.`,
-      citations: papers.map((p) => ({ paperId: p.id, title: p.title, excerpt: "Key claim from this paper..." })),
-    });
+    if (!question.trim() || papers.length === 0) return;
+    setAsking(true);
+    try {
+      const researcherId = address || "0x0000000000000000000000000000000000000000";
+      // Fetch paper corpus from 0G Storage
+      const corpus = await Promise.all(
+        papers.map(async (p) => {
+          try {
+            const paper = await getPaper(p.id);
+            return {
+              id: p.id,
+              title: paper?.title || p.title,
+              abstract: paper?.abstract || "",
+              keyClaims: paper?.keyClaims || [],
+            };
+          } catch {
+            return { id: p.id, title: p.title, abstract: "", keyClaims: [] as string[] };
+          }
+        })
+      );
+      const result = await answerResearchQuestion(researcherId, question, corpus);
+      setAnswer({ text: result.text, citations: result.citations });
+    } catch (err) {
+      console.error("Ask error:", err);
+      setAnswer({
+        text: "I encountered an error analyzing your corpus. Please try again.",
+        citations: [],
+      });
+    } finally {
+      setAsking(false);
+    }
   };
 
   return (
@@ -97,9 +135,10 @@ export default function ResearchPage() {
           />
           <button
             onClick={handleAsk}
-            className="px-6 py-3 bg-violet-600 hover:bg-violet-500 text-white rounded-xl font-medium transition self-end"
+            disabled={asking || papers.length === 0}
+            className="px-6 py-3 bg-violet-600 hover:bg-violet-500 disabled:bg-violet-800 text-white rounded-xl font-medium transition self-end"
           >
-            Ask
+            {asking ? "Thinking..." : "Ask"}
           </button>
         </div>
 
