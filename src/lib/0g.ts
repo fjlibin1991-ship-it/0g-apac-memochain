@@ -135,3 +135,62 @@ export async function getSessionHistory(
   if (since) events = events.filter((e) => e.timestamp >= since);
   return events.sort((a, b) => a.timestamp - b.timestamp);
 }
+
+// ---------------------------------------------------------------------------
+// Cross-Session Persistent Memory (KV Layer — researcher long-term profile)
+// ---------------------------------------------------------------------------
+
+export interface ResearcherProfile {
+  researcherId: string;
+  interests: string[];          // research interests for corpus filtering
+  lastSeen: number;
+  papersIndexed: number;
+  totalQuestions: number;
+  topCitations: string[];       // most-cited paper IDs across sessions
+}
+
+const PROFILE_PREFIX = "memochain:profile:";
+
+export async function getOrCreateProfile(researcherId: string): Promise<ResearcherProfile> {
+  const client = new StorageClient(STORAGE_RPC, STORAGE_CONTRACT);
+  const key = `${PROFILE_PREFIX}${researcherId}`;
+  const result = await client.get(key);
+  if (result?.value) {
+    return JSON.parse(result.value) as ResearcherProfile;
+  }
+  // First time — create default profile
+  const profile: ResearcherProfile = {
+    researcherId,
+    interests: ["AI", "machine learning", "LLM"],
+    lastSeen: Date.now(),
+    papersIndexed: 0,
+    totalQuestions: 0,
+    topCitations: [],
+  };
+  await client.set({ key, value: JSON.stringify(profile) });
+  return profile;
+}
+
+export async function updateProfile(profile: ResearcherProfile): Promise<void> {
+  const client = new StorageClient(STORAGE_RPC, STORAGE_CONTRACT);
+  profile.lastSeen = Date.now();
+  await client.set({ key: `${PROFILE_PREFIX}${profile.researcherId}`, value: JSON.stringify(profile) });
+}
+
+export async function recordQuestionAsked(
+  researcherId: string,
+  citedPaperIds: string[]
+): Promise<void> {
+  const profile = await getOrCreateProfile(researcherId);
+  profile.totalQuestions++;
+  // Update top citations (simple frequency count)
+  for (const pid of citedPaperIds) {
+    if (!profile.topCitations.includes(pid)) {
+      profile.topCitations.push(pid);
+    }
+  }
+  if (profile.topCitations.length > 10) {
+    profile.topCitations = profile.topCitations.slice(-10);
+  }
+  await updateProfile(profile);
+}
