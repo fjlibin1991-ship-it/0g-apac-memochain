@@ -25,7 +25,7 @@ export default function ResearchPage() {
       if (file.name.endsWith(".pdf")) {
         const pdfParse = (await import("pdf-parse")).default;
         const buffer = await file.arrayBuffer();
-        const { text: pdfText } = await pdfParse(Buffer.from(buffer));
+        const { text: pdfText } = await pdfParse(new Uint8Array(buffer));
         text = pdfText;
       } else {
         text = await file.text();
@@ -56,6 +56,7 @@ export default function ResearchPage() {
       setPapers((prev) => [...prev, { id: paperId, title }]);
     } catch (err) {
       console.error("Upload error:", err);
+      alert(`Failed to upload paper: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
       setUploading(false);
     }
